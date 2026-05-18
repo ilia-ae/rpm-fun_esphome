@@ -467,7 +467,9 @@ The YAML contains a commented SSD1306 72×40 OLED block (I²C, address `0x3C`, o
 
 ## License
 
-MIT.
+MIT © [Ilia Arestov](https://ilia.ae/en/)
+
+See [LICENSE](LICENSE) for the full text.
 
 ---
 
