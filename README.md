@@ -118,7 +118,22 @@ This is the most important thing to understand before wiring anything:
 - If you want variable speed on fans 5 and 6 too, you need an **external PWM source** for them (a separate 25 kHz signal from another MCU, a hardware fan controller, or a motherboard header). This firmware will only **read** their RPM in that case.
 - A common pattern: use fans 1 – 4 for case/radiator fans you want to control from HA, and assign fans 5 – 6 to a CPU-block pump tach and a PSU fan tach — both of which are typically not meant to be PWM-controlled anyway.
 
-See [Why this layout?](#why-this-layout-hardware-constraints) below for the silicon-vs-design reasoning, and [Extensions](#extensions) for how to add more PWM channels if you actually need 6 controlled fans.
+#### Why is it 4 controlled and not 6?
+
+The intuitive answer — "because ESP32-S3 PWM hardware only supports 4 channels" — is **wrong**. The LEDC peripheral on the ESP32-S3 has **8 PWM channels** and all of them can share a single 25 kHz timer, so the chip could comfortably drive **6 or even 8 PWM fans** at the same time ([ESP-IDF LEDC docs](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/ledc.html)).
+
+The real reason this firmware ships with **4 PWM + 6 tach** is a **deliberate design choice** matching the most common PC-cooling layout:
+
+| Role in a typical PC | Wants speed control? | Wants RPM readback? |
+|---|---|---|
+| Case / radiator fans (3 – 4 of them) | **yes** — slow them down at idle, ramp them up under load | yes |
+| CPU water-block pump | usually no — runs at fixed speed for stable flow | **yes** — losing the pump = thermal emergency, must be monitored |
+| PSU fan | no — controlled by the PSU itself | **yes** — leading indicator of PSU dying |
+| GPU / SSD / chassis-monitor fans | no — controlled by their own card or BIOS | **yes** — useful telemetry |
+
+That is a 4-PWM + 2-tach-only split, plus the 4 controlled fans also report their own RPM → **4 PWM + 6 tach total**. Exactly what this YAML implements.
+
+If your build does not fit this pattern and you genuinely need all 6 fans speed-controlled, the silicon allows it — see the [extension recipe](#extend-to-6-pwm-controlled-fans). For the full silicon-vs-design analysis (LEDC channels, PCNT cap, INPUT_PULLUP quirk) see [Why this layout?](#why-this-layout-hardware-constraints) below.
 
 ---
 
