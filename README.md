@@ -9,8 +9,9 @@
 
 ESPHome firmware for the **ESP32-S3-DevKitC-1** that turns the board into a fan controller with **Home Assistant** integration:
 
-- up to **6 tachometer (RPM) inputs** from 4-pin PC fans
-- up to **4 PWM outputs** at **25 kHz** (Intel 4-Wire Fan Specification)
+- **4 fans with full PWM speed control + RPM readback** (variable 0 – 100 %, 25 kHz, Intel 4-Wire Fan Spec)
+- **+ 2 fans, RPM readback only** (no PWM channel — these fans run at whatever fixed speed they are wired to: usually 100 % if connected straight to +12 V)
+- → **6 tachometer inputs total, 4 PWM outputs total**
 - **WS2812 status LED ring** showing Wi-Fi state and fan activity
 - **Native API with encryption** for Home Assistant
 - **OTA updates** over the network
@@ -96,6 +97,28 @@ The tach output of a PC fan is **open-collector / open-drain**, so it always nee
 | WS2812 LED ring (3 LEDs) | GPIO48 | RBG order, `chipset: ws2812`, `rmt_channel: 2`, `internal: true` — not exposed to HA |
 | I²C SDA | GPIO41 | 400 kHz |
 | I²C SCL | GPIO40 | Reserved for the optional SSD1306 OLED (block is commented out in YAML) |
+
+### Fan capabilities at a glance
+
+This is the most important thing to understand before wiring anything:
+
+| Fan slot | Tach (RPM read) | PWM (speed control) | What you get in Home Assistant |
+|---|---|---|---|
+| **Fan 1** | GPIO5 | GPIO17 | RPM sensor + speed slider 0 – 100 % |
+| **Fan 2** | GPIO6 | GPIO18 | RPM sensor + speed slider 0 – 100 % |
+| **Fan 3** | GPIO7 | GPIO35 | RPM sensor + speed slider 0 – 100 % |
+| **Fan 4** | GPIO8 | GPIO37 | RPM sensor + speed slider 0 – 100 % |
+| **Fan 5** | GPIO9 | — *(no PWM channel)* | RPM sensor only — **fan runs at whatever fixed speed it is wired to** |
+| **Fan 6** | GPIO36 | — *(no PWM channel)* | RPM sensor only — **fan runs at whatever fixed speed it is wired to** |
+
+**What this means in practice for fans 5 and 6:**
+
+- If you wire the PWM pin straight to +12 V (or leave it floating on most fans), the fan runs at **100 % always**. There is no slider in HA to slow it down.
+- If you wire the PWM pin to GND, most modern fans interpret 0 % duty as "stop" or "minimum" — also a fixed state.
+- If you want variable speed on fans 5 and 6 too, you need an **external PWM source** for them (a separate 25 kHz signal from another MCU, a hardware fan controller, or a motherboard header). This firmware will only **read** their RPM in that case.
+- A common pattern: use fans 1 – 4 for case/radiator fans you want to control from HA, and assign fans 5 – 6 to a CPU-block pump tach and a PSU fan tach — both of which are typically not meant to be PWM-controlled anyway.
+
+See [Why this layout?](#why-this-layout-hardware-constraints) below for the silicon-vs-design reasoning, and [Extensions](#extensions) for how to add more PWM channels if you actually need 6 controlled fans.
 
 ---
 
@@ -346,6 +369,7 @@ ESPHome reports Wi-Fi signal in dBm by default. The lambda `quality = (RSSI + 10
 
 | Symptom | Likely cause / fix |
 |---|---|
+| Fan 5 or 6 spins at full speed and ignores HA | **Expected.** Fans 5 and 6 only have tachometer inputs in this firmware — there is no PWM channel for them. They run at whatever speed their power wiring dictates (typically 100 % off straight +12 V). See [Fan capabilities at a glance](#fan-capabilities-at-a-glance) and the [extension recipe](#extend-to-6-pwm-controlled-fans) if you need to add PWM control. |
 | Tach reads 0 on fans 1 – 4 | Missing external 4.7 – 10 kΩ pull-up from Tach to 3.3 V. Add the resistor. |
 | RPM jitters ± 50 at a steady speed | Filter too short or no common ground between PSU and ESP. Tie the grounds. |
 | Fan refuses to start, chirps | `min_power` too low, or the fan's PWM input is fussy about 3.3 V. Try raising `min_power` to `0.2`. |
@@ -357,6 +381,66 @@ ESPHome reports Wi-Fi signal in dBm by default. The lambda `quality = (RSSI + 10
 ---
 
 ## Extensions
+
+### Extend to 6 PWM-controlled fans
+
+If 4 controlled fans is not enough and you want fans 5 and 6 fully variable too, you need to add two more PWM outputs and two more sliders. ESP32-S3's LEDC has 8 channels total and they can all share the same 25 kHz timer, so the silicon is fine — see [Why this layout?](#why-this-layout-hardware-constraints).
+
+Pick two free GPIOs (good candidates: GPIO15, GPIO16 — both safe, no strapping function, no PSRAM conflict on any S3 variant), then **add** to `rpm-fun.yaml`:
+
+```yaml
+output:
+  # …existing 4 entries…
+  - platform: ledc
+    id: pwm_fan_5
+    pin: GPIO15
+    frequency: 25000Hz
+    min_power: 0.1
+  - platform: ledc
+    id: pwm_fan_6
+    pin: GPIO16
+    frequency: 25000Hz
+    min_power: 0.1
+
+number:
+  # …existing entries…
+  - platform: template
+    id: fan_speed_5
+    name: "Fan Speed 5 (GPIO15)"
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 50
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          id(pwm_fan_5).set_level(x / 100.0);
+          id(fan_speed_5).publish_state(x);
+  - platform: template
+    id: fan_speed_6
+    name: "Fan Speed 6 (GPIO16)"
+    # …same structure, swap 5 → 6, GPIO15 → GPIO16…
+```
+
+Optionally also extend the `init_pwm` script so the new outputs get restored on (re)connect:
+
+```yaml
+script:
+  - id: init_pwm
+    then:
+      - lambda: |-
+          id(pwm_fan_1).set_level(id(fan_speed_1).state / 100.0);
+          id(pwm_fan_2).set_level(id(fan_speed_2).state / 100.0);
+          id(pwm_fan_3).set_level(id(fan_speed_3).state / 100.0);
+          id(pwm_fan_4).set_level(id(fan_speed_4).state / 100.0);
+          id(pwm_fan_5).set_level(id(fan_speed_5).state / 100.0);
+          id(pwm_fan_6).set_level(id(fan_speed_6).state / 100.0);
+```
+
+Re-flash, and HA picks up `Fan Speed 5` and `Fan Speed 6` automatically.
+
+### OLED display
 
 The YAML contains a commented SSD1306 72×40 OLED block (I²C, address `0x3C`, on SDA = 41 / SCL = 40). Uncomment the `display:` block (the matching `font:` block is already present) to show six fan RPMs, SNTP time, and Wi-Fi quality on the screen.
 
