@@ -26,6 +26,7 @@ ESPHome firmware for the **ESP32-S3-DevKitC-1** that turns the board into a fan 
 - [Pinout](#pinout)
 - [Why this layout? (hardware constraints)](#why-this-layout-hardware-constraints)
 - [Wiring a 4-pin PC fan](#wiring-a-4-pin-pc-fan)
+- [Power budget](#power-budget)
 - [Home Assistant entities](#home-assistant-entities)
 - [LED indication](#led-indication)
 - [Installation](#installation)
@@ -45,12 +46,20 @@ ESPHome firmware for the **ESP32-S3-DevKitC-1** that turns the board into a fan 
 | ESPHome | **≥ 2024.12.4** (see `esphome.min_version`) |
 | Framework | Arduino (required by `esp32_rmt_led_strip` and the `pulse_counter` legacy mode used here) |
 | Fans | Standard **4-pin PWM PC fans** (Intel spec): GND / +12 V / Tach / PWM. Up to 6 tach, up to 4 PWM-controlled |
-| Fan power | External **+12 V** PSU. The ESP32 is powered from USB-C on the DevKitC-1. **A common ground is mandatory** |
+| Fan power | External **+12 V** PSU. The ESP32 is powered from USB-C on the DevKitC-1. **A common ground is mandatory** (see [Power budget](#power-budget) below) |
 | Pull-ups | External **10 kΩ** pull-ups from each Tach line to +3.3 V on **fans 1–4** (see note below) |
 
 ### Why "no octal-PSRAM"
 
-ESP32-S3 modules with the `R8` suffix (8 MB octal PSRAM) use **GPIO33–GPIO37** as the PSRAM bus. This firmware uses **GPIO35 and GPIO37 as PWM outputs**, so on `N16R8` / `N32R8` modules they are unavailable. Use a variant without `R8`, or remap fans 3 and 4 to free pins.
+ESP32-S3 modules with the `R8` suffix (8 MB octal PSRAM) wire **GPIO33 – GPIO37** to the SPI PSRAM data bus (`SPIIO4 – SPIIO7` + `SPIDQS`), per the [ESP32-S3 Hardware Design Guidelines](https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32s3/schematic-checklist.html). Those pins **cannot be used as GPIO** on R8 boards.
+
+This firmware touches **three** pins inside that reserved range:
+
+- **GPIO35** — PWM output for fan 3
+- **GPIO36** — tachometer input for fan 6
+- **GPIO37** — PWM output for fan 4
+
+So on an `N16R8` / `N32R8` module the firmware will fail to boot or corrupt PSRAM access. Use a non-R8 variant (`N8`, `N16`, `N8R2` quad-PSRAM is fine), or remap fans 3, 4, and 6 to free pins.
 
 ---
 
@@ -159,6 +168,25 @@ Standard 4-pin PC-fan connector (looking into the fan-side socket):
 
 ---
 
+## Power budget
+
+The ESP32 is fed from USB (≤ 500 mA at 5 V is plenty for the SoC + LED ring). The **fans run off the external 12 V PSU**, which you size yourself.
+
+Rough current draw per fan at 12 V:
+
+| Fan class | Typical running current | Inrush at start |
+|---|---|---|
+| 120 mm case fan (e.g. Arctic P12) | 80 – 150 mA | up to 2× running |
+| 140 mm case fan (Noctua NF-A14) | 80 – 200 mA | up to 2× running |
+| 120 mm high-static-pressure (server / radiator) | 200 – 500 mA | up to 3× running |
+| 40/60 mm 1U server fan | 200 – 800 mA | up to 3× running |
+
+**Budget rule of thumb:** size the 12 V PSU for the **sum of inrush currents** of all fans you might spin up simultaneously. A 6-fan build of regular case fans is comfortably served by a **12 V / 2 A (24 W)** brick. A build with high-RPM radiator or server fans wants **12 V / 4 – 5 A** to survive simultaneous cold starts without a brownout.
+
+Always tie the **PSU ground to the ESP32 ground** — otherwise the tach signal is just floating noise.
+
+---
+
 ## Home Assistant entities
 
 Exposed via the native API:
@@ -193,9 +221,11 @@ The WS2812 ring of 3 LEDs is declared `internal: true` — Home Assistant does n
 | State | Colour / behaviour |
 |---|---|
 | Wi-Fi connected, fans idle | **Green**, steady |
-| Wi-Fi disconnected | **Magenta**, blinking 500 ms on / 500 ms off |
-| Any fan spinning (RPM > 0) | **Yellow**, blinking 200 ms on / 200 ms off — **overrides** the connection-state indication |
+| Wi-Fi disconnected, fans idle | **Magenta**, blinking 500 ms on / 500 ms off |
+| Any fan spinning (RPM > 0) | **Yellow**, blinking 200 ms on / 200 ms off (interleaved with the connection-state colour — see note below) |
 | Just (re)connected to Wi-Fi | Brief green + `init_pwm` re-applies saved PWM values |
+
+> **Note on interleaving.** Two `interval:` blocks run in parallel: the **1 s block** sets the colour from Wi-Fi state, the **500 ms block** triggers the yellow fan-activity blink. When fans are spinning and Wi-Fi is connected, the visible result is **mostly yellow flashes with brief green flashes every second**, not pure yellow. This is by design — both signals stay observable at the same time.
 
 Brightness is controlled from HA via `number.led_brightness`.
 
@@ -262,9 +292,19 @@ api_ha: "PUT_32BYTE_BASE64_KEY_HERE="
 ota_key: "your-strong-ota-password"
 ```
 
-> Add `secrets.yaml` to `.gitignore` — **never commit secrets**.
+> A template lives at [`secrets.yaml.example`](secrets.yaml.example) — `cp secrets.yaml.example secrets.yaml` and fill it in. `secrets.yaml` is already in [`.gitignore`](.gitignore); **never commit it**.
 
-The fallback AP comes up as `Rpm-Fun Fallback Hotspot` with the password `uStrxuFDPIOY` (hard-coded in YAML — change it if you deploy this beyond your home network).
+### Fallback hotspot
+
+If the main Wi-Fi is unreachable at boot or drops out, the device exposes an open AP for recovery:
+
+| Field | Value |
+|---|---|
+| SSID | `Rpm-Fun Fallback Hotspot` |
+| Password | `uStrxuFDPIOY` (hard-coded in YAML — **change it** if you deploy beyond a trusted network) |
+| Captive-portal URL | opens automatically; manual fallback: <http://192.168.4.1> |
+
+Connect any phone/laptop to the SSID, accept the captive-portal prompt (or open <http://192.168.4.1> directly), and you get a web form to set new Wi-Fi credentials without re-flashing.
 
 ---
 
@@ -309,7 +349,7 @@ ESPHome reports Wi-Fi signal in dBm by default. The lambda `quality = (RSSI + 10
 | Tach reads 0 on fans 1 – 4 | Missing external 4.7 – 10 kΩ pull-up from Tach to 3.3 V. Add the resistor. |
 | RPM jitters ± 50 at a steady speed | Filter too short or no common ground between PSU and ESP. Tie the grounds. |
 | Fan refuses to start, chirps | `min_power` too low, or the fan's PWM input is fussy about 3.3 V. Try raising `min_power` to `0.2`. |
-| Firmware hangs at boot | Module is `R8` (octal PSRAM); GPIO35/37 are reserved for PSRAM. Use a non-R8 variant or remap PWM 3/4 to free pins. |
+| Firmware hangs at boot | Module is `R8` (octal PSRAM); GPIO33 – 37 are reserved for PSRAM, and this firmware uses GPIO35 (PWM 3), GPIO36 (tach 6) and GPIO37 (PWM 4). Use a non-R8 variant or remap fans 3, 4, and 6. |
 | LED ring shows the wrong colour | Incorrect `rgb_order`. Try swapping `RBG` ↔ `GRB` ↔ `RGB` in the `light` block. |
 | Device not visible in HA | The `api.encryption.key` in `secrets.yaml` must be valid base64 of 32 bytes (`openssl rand -base64 32`). |
 | OTA fails | Check free space (≥ 1 MB on the ESP32-S3 `ota` partition). |

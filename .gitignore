@@ -1,0 +1,20 @@
+# Secrets — never commit
+secrets.yaml
+
+# ESPHome build artifacts
+# The YAML sets `build_path: build/rpm-fun`, this directory is
+# regenerated on every `esphome run` / `esphome compile`.
+build/
+.esphome/
+
+# Python / tooling caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
