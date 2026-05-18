@@ -1,280 +1,337 @@
 # rpm-fun
 
-ESPHome-прошивка для **ESP32-S3 DevKitC-1**, превращающая плату в контроллер вентиляторов с интеграцией в **Home Assistant**:
+[![ESPHome](https://img.shields.io/badge/ESPHome-%E2%89%A5%202024.12.4-000000?logo=esphome&logoColor=white)](https://esphome.io/)
+[![Platform](https://img.shields.io/badge/platform-ESP32--S3-E7352C?logo=espressif&logoColor=white)](https://www.espressif.com/en/products/socs/esp32-s3)
+[![Framework](https://img.shields.io/badge/framework-Arduino-00979D?logo=arduino&logoColor=white)](https://github.com/espressif/arduino-esp32)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-compatible-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io/)
+[![License](https://img.shields.io/badge/license-MIT-green)](#license)
+[![Made with YAML](https://img.shields.io/badge/made%20with-YAML-CB171E?logo=yaml&logoColor=white)](rpm-fun.yaml)
 
-- до **6 тахометрических входов** (RPM) с 4-пиновых PC-вентиляторов
-- до **4 PWM-выходов** (25 kHz, Intel 4-Wire Fan Spec) для управления оборотами
-- **WS2812 LED-индикатор** состояния подключения и работы вентиляторов
-- **Native API + шифрование** для Home Assistant
-- **OTA-обновления** по сети
-- **Fallback Wi-Fi AP** + captive portal, если основная сеть недоступна
-- автосохранение скоростей и яркости (`restore_value: true`)
-- SNTP-время и заготовка под OLED-дисплей (закомментирована)
+ESPHome firmware for the **ESP32-S3-DevKitC-1** that turns the board into a fan controller with **Home Assistant** integration:
 
-> YAML лицензирован под MIT. См. [LICENSE](LICENSE), если присутствует, либо файл `rpm-fun.yaml`.
+- up to **6 tachometer (RPM) inputs** from 4-pin PC fans
+- up to **4 PWM outputs** at **25 kHz** (Intel 4-Wire Fan Specification)
+- **WS2812 status LED ring** showing Wi-Fi state and fan activity
+- **Native API with encryption** for Home Assistant
+- **OTA updates** over the network
+- **Fallback Wi-Fi access point** + captive portal when the main SSID is unreachable
+- persistent speed/brightness state (`restore_value: true`)
+- SNTP time sync and a ready-to-uncomment OLED display block
 
 ---
 
-## Содержание
+## Table of Contents
 
-- [Аппаратные требования](#аппаратные-требования)
-- [Распиновка](#распиновка)
-- [Подключение 4-пинового вентилятора](#подключение-4-пинового-вентилятора)
-- [Сущности в Home Assistant](#сущности-в-home-assistant)
-- [LED-индикация](#led-индикация)
-- [Установка](#установка)
+- [Hardware Requirements](#hardware-requirements)
+- [Pinout](#pinout)
+- [Why this layout? (hardware constraints)](#why-this-layout-hardware-constraints)
+- [Wiring a 4-pin PC fan](#wiring-a-4-pin-pc-fan)
+- [Home Assistant entities](#home-assistant-entities)
+- [LED indication](#led-indication)
+- [Installation](#installation)
 - [`secrets.yaml`](#secretsyaml)
-- [OTA-обновления](#ota-обновления)
-- [Тонкости реализации](#тонкости-реализации)
-- [Траблшутинг](#траблшутинг)
-- [Лицензия](#лицензия)
+- [OTA updates](#ota-updates)
+- [Implementation notes](#implementation-notes)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
-## Аппаратные требования
+## Hardware Requirements
 
-| Компонент | Требование |
+| Component | Requirement |
 |---|---|
-| MCU-плата | **ESP32-S3-DevKitC-1** (v1.0/v1.1). Желательно вариант **без octal-PSRAM** (N8 / N16 / N8R2), см. примечание ниже про GPIO35/37 |
-| ESPHome | **≥ 2024.12.4** (см. `esphome.min_version`) |
-| Framework | Arduino (для совместимости с `esp32_rmt_led_strip` и `pulse_counter` без PCNT) |
-| Вентиляторы | Стандартные **4-pin PWM PC-fan** (Intel spec): GND / +12 V / Tach / PWM. До 6 шт. на тахо и до 4 шт. на PWM |
-| Питание вентиляторов | Внешний **+12 V** БП. ESP32 от 5 V/USB-C порта DevKitC-1. **Общая земля обязательна** |
-| Подтяжки | Внешние **резисторы 10 kΩ** между Tach-выходом фана и +3.3 V на пинах фана 1–4 (см. ниже) |
+| MCU board | **ESP32-S3-DevKitC-1** (v1.0 / v1.1). Use a variant **without octal-PSRAM** (`N8`, `N16`, `N8R2`), see note below |
+| ESPHome | **≥ 2024.12.4** (see `esphome.min_version`) |
+| Framework | Arduino (required by `esp32_rmt_led_strip` and the `pulse_counter` legacy mode used here) |
+| Fans | Standard **4-pin PWM PC fans** (Intel spec): GND / +12 V / Tach / PWM. Up to 6 tach, up to 4 PWM-controlled |
+| Fan power | External **+12 V** PSU. The ESP32 is powered from USB-C on the DevKitC-1. **A common ground is mandatory** |
+| Pull-ups | External **10 kΩ** pull-ups from each Tach line to +3.3 V on **fans 1–4** (see note below) |
 
-### Почему «без octal-PSRAM»
+### Why "no octal-PSRAM"
 
-ESP32-S3 в варианте `R8` (8 MB octal PSRAM) занимает физические **GPIO33–GPIO37** под линии памяти. В этой прошивке `GPIO35` и `GPIO37` используются как PWM-выходы. На модулях **N16R8 / N32R8 эти ноги задействовать нельзя** — прошивка либо не загрузится, либо повредит PSRAM-доступ. Используйте модуль без R8 или замените эти пины на свободные.
+ESP32-S3 modules with the `R8` suffix (8 MB octal PSRAM) use **GPIO33–GPIO37** as the PSRAM bus. This firmware uses **GPIO35 and GPIO37 as PWM outputs**, so on `N16R8` / `N32R8` modules they are unavailable. Use a variant without `R8`, or remap fans 3 and 4 to free pins.
 
 ---
 
-## Распиновка
+## Pinout
 
-### Тахометрические входы (RPM)
+### Tachometer inputs (RPM)
 
-| Фан | GPIO | Метод | Подтяжка | Имя в HA |
+| Fan | GPIO | Method | Pull-up | HA entity |
 |---|---|---|---|---|
-| Fan 1 | GPIO5 | PCNT (аппаратный) | внешняя 10 kΩ → 3.3 V | `Fan RPM 1 (GPIO5)` |
-| Fan 2 | GPIO6 | PCNT | внешняя 10 kΩ → 3.3 V | `Fan RPM 2 (GPIO6)` |
-| Fan 3 | GPIO7 | PCNT | внешняя 10 kΩ → 3.3 V | `Fan RPM 3 (GPIO7)` |
-| Fan 4 | GPIO8 | PCNT | внешняя 10 kΩ → 3.3 V | `Fan RPM 4 (GPIO8)` |
-| Fan 5 | GPIO9 | программный, фильтр 13 µs | **встроенная** `INPUT_PULLUP` | `Fan RPM 5 (GPIO9)` |
-| Fan 6 | GPIO36 | программный, фильтр 13 µs | **встроенная** `INPUT_PULLUP` | `Fan RPM 6 (GPIO36)` |
+| Fan 1 | GPIO5 | PCNT (hardware) | external 10 kΩ → 3.3 V | `Fan RPM 1 (GPIO5)` |
+| Fan 2 | GPIO6 | PCNT | external 10 kΩ → 3.3 V | `Fan RPM 2 (GPIO6)` |
+| Fan 3 | GPIO7 | PCNT | external 10 kΩ → 3.3 V | `Fan RPM 3 (GPIO7)` |
+| Fan 4 | GPIO8 | PCNT | external 10 kΩ → 3.3 V | `Fan RPM 4 (GPIO8)` |
+| Fan 5 | GPIO9 | software, 13 µs glitch filter | **internal** `INPUT_PULLUP` | `Fan RPM 5 (GPIO9)` |
+| Fan 6 | GPIO36 | software, 13 µs glitch filter | **internal** `INPUT_PULLUP` | `Fan RPM 6 (GPIO36)` |
 
-Тахо-выход PC-вентилятора — **open-collector / open-drain**, поэтому требует подтяжки. У фанов 1–4 в YAML подтяжка не объявлена (используется PCNT с упрощённым синтаксисом пина) — это значит, что подтягивать нужно **снаружи**: резистор 4.7–10 kΩ между Tach-пином разъёма фана и 3.3 V платы.
+The tach output of a PC fan is **open-collector / open-drain**, so it always needs a pull-up. Fans 1–4 declare the pin with the short syntax (`pin: GPIO5`), which does not propagate `INPUT_PULLUP` into the PCNT peripheral — that is why an **external resistor (4.7 – 10 kΩ to 3.3 V)** is required. Fans 5 and 6 use the long pin syntax and rely on the MCU's internal pull-up.
 
-### PWM-выходы
+### PWM outputs
 
-| Фан | GPIO | Частота | Драйвер | Имя в HA |
+| Fan | GPIO | Frequency | Driver | HA entity |
 |---|---|---|---|---|
 | Fan 1 | GPIO17 | 25 kHz | LEDC | `Fan Speed 1 (GPIO17)` |
 | Fan 2 | GPIO18 | 25 kHz | LEDC | `Fan Speed 2 (GPIO18)` |
 | Fan 3 | **GPIO35** | 25 kHz | LEDC | `Fan Speed 3 (GPIO35)` |
 | Fan 4 | **GPIO37** | 25 kHz | LEDC | `Fan Speed 4 (GPIO37)` |
 
-`min_power: 0.1` — нижняя граница скважности 10 % (чтобы вентилятор гарантированно вращался и не «звенел» на старте).
+`min_power: 0.1` clamps the duty cycle floor to 10 % so the fan always spins reliably and avoids stall noise on cold start.
 
-### Прочая периферия
+### Other peripherals
 
-| Назначение | GPIO | Замечание |
+| Function | GPIO | Notes |
 |---|---|---|
-| WS2812 LED-кольцо (3 LED) | GPIO48 | RBG-порядок, `chipset: ws2812`, `rmt_channel: 2`, `internal: true` — не экспортируется в HA |
+| WS2812 LED ring (3 LEDs) | GPIO48 | RBG order, `chipset: ws2812`, `rmt_channel: 2`, `internal: true` — not exposed to HA |
 | I²C SDA | GPIO41 | 400 kHz |
-| I²C SCL | GPIO40 | зарезервировано под опциональный SSD1306 OLED (закомментирован в YAML) |
+| I²C SCL | GPIO40 | Reserved for the optional SSD1306 OLED (block is commented out in YAML) |
 
 ---
 
-## Подключение 4-пинового вентилятора
+## Why this layout? (hardware constraints)
 
-Стандартный 4-pin PC-fan коннектор (вид со стороны разъёма фана):
+The asymmetric "**6 tach, only 4 PWM**" layout and the split between PCNT (fans 1–4) and software pulse counting (fans 5–6) is sometimes attributed to "the ESP32 can't handle that many fans." That is **not** the actual story — ESP32-S3 silicon could drive more. The real reasons are a stack of smaller constraints in the ESPHome layer and the standard PC use case.
 
-```
-        ┌─── Pin 1 GND        →  GND  (общая земля платы и БП 12 V)
-        │
-        ├─── Pin 2 +12V       →  +12 V с внешнего БП
-        │
-        ├─── Pin 3 TACH        →  GPIO ESP32 (RPM-вход) + pull-up к 3.3 V
-        │
-        └─── Pin 4 PWM         →  GPIO ESP32 (PWM-выход, 25 kHz)
-```
+### What the silicon actually supports
 
-**Важно:**
+| Peripheral | ESP32-S3 silicon capacity | Implication for fan control |
+|---|---|---|
+| **LEDC (PWM)** | 8 channels, 4 timers, **low-speed mode only** ([ESP-IDF docs](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/ledc.html)) | All channels can share a single 25 kHz timer → in theory **8 PWM fans** at once |
+| **PCNT** | 8 units × 2 channels = **16 hardware channels** ([ESP-IDF docs](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/pcnt.html)) | Plenty for 6 fan tachs |
+| **RMT** | 4 TX + 4 RX channels | WS2812 strip consumes 1 TX, plenty left |
 
-- **Общая земля** ESP32 ↔ БП 12 V обязательна, иначе тахометр будет ловить шум.
-- ESP32 выдаёт **3.3 V** на PWM. По Intel 4-Wire Spec фан принимает 0–5.25 V и порог переключения ~1.8 V, поэтому 3.3 V — корректный логический «1». Подтяжка PWM-входа внутри фана уже есть, внешняя не нужна.
-- Тахо-сигнал генерирует **2 импульса на оборот**, отсюда `rpm = x / 2.0` в фильтре.
+So the **chip itself is not the bottleneck**. What actually shapes the layout:
+
+### 1. ESPHome wraps PCNT with an 8-channel cap
+
+ESPHome's `pulse_counter` component documents an explicit limit: *"A maximum of 8 channels can be used"* when `use_pcnt: true` ([ESPHome docs](https://esphome.io/components/sensor/pulse_counter.html)). This is a wrapper-level constraint, not a silicon one. For 6 fans it is **not binding**, but it caps any future expansion at 8 channels per device.
+
+### 2. PCNT's 13 µs glitch filter ceiling
+
+From the same ESPHome docs: *"on the ESP32, when using the hardware pulse counter \[`internal_filter`\] can not be higher than 13 µs … for the ESP8266 or with `use_pcnt: false` you can use larger intervals too."* If you want a heavier debounce (for long, noisy fan cables — common in 19" racks or 1U sleds), you must fall back to software counting.
+
+### 3. `INPUT_PULLUP` vs PCNT pin syntax
+
+PC-fan tachs are open-collector and need a pull-up. ESPHome's `pulse_counter` accepts two pin syntaxes:
+
+- **short** — `pin: GPIO5` — used by fans 1–4. Concise but does not carry a `mode:` (no internal pull-up), so each line needs an **external** 4.7 – 10 kΩ resistor on the board.
+- **expanded** — `pin: { number: GPIO9, mode: INPUT_PULLUP }` — used by fans 5–6. Cleanest way to enable the MCU's internal pull-up. In practice this pairs more reliably with `use_pcnt: false`, hence the software-counter fallback on those two channels.
+
+This is the **specific reason** fans 5 and 6 dropped off PCNT: it was not a unit-count exhaustion, it was a deliberate choice to get an internal pull-up on those signals without adding more discrete components to the board.
+
+### 4. LEDC channels vs the 4-fan PWM choice
+
+LEDC has 8 channels on ESP32-S3, all able to share one 25 kHz timer, so **6 PWM outputs are perfectly feasible**. The reason this firmware exposes only 4 is the **typical case-fan use case**: enthusiast and SFF PC builds usually have 3–4 actively controlled case/radiator fans plus 2 "report-only" signals (CPU-block pump tach, PSU fan tach, or a non-PWM Molex fan). Putting the dial on 4 controlled + 6 monitored matches that pattern.
+
+### TL;DR
+
+| You might think… | …but the actual reason is |
+|---|---|
+| "The chip can't drive 6 PWM fans" | LEDC can do 8 at 25 kHz on a shared timer — the 4-PWM cap is a **design choice for typical PC fan setups**, not silicon |
+| "PCNT ran out for fans 5–6" | PCNT has 16 channels; the **8-channel ESPHome cap** is the real ceiling, and even that isn't hit at 6 fans |
+| "Software counting was a forced fallback" | It was a **pragmatic choice for clean internal pull-ups** on the open-collector tach lines (and a free filter > 13 µs option for noisy installations) |
+
+If you want to extend to 6 PWM outputs, add two more `ledc` outputs on free GPIOs (e.g. 15, 16) and two more `number.template` entities driving them — no chip changes required.
 
 ---
 
-## Сущности в Home Assistant
+## Wiring a 4-pin PC fan
 
-Прошивка экспортирует следующие сущности через native API:
+Standard 4-pin PC-fan connector (looking into the fan-side socket):
+
+```
+        ┌─── Pin 1 GND       →  GND  (tied to both board GND and PSU GND)
+        │
+        ├─── Pin 2 +12V      →  +12 V from external PSU
+        │
+        ├─── Pin 3 TACH      →  ESP32 GPIO (RPM input) + pull-up to 3.3 V
+        │
+        └─── Pin 4 PWM       →  ESP32 GPIO (PWM output, 25 kHz)
+```
+
+**Important:**
+
+- A **common ground** between the ESP32 and the 12 V PSU is mandatory, otherwise the tach signal is just noise.
+- The ESP32 drives PWM at **3.3 V**. The Intel 4-Wire Fan Spec allows 0 – 5.25 V on the PWM input with a switching threshold around 1.8 V, so 3.3 V is a valid logic-high. The fan internally pulls up the PWM input, no external resistor needed on that line.
+- The tach line emits **two pulses per revolution** — that is why the filter is `rpm = x / 2.0`.
+
+---
+
+## Home Assistant entities
+
+Exposed via the native API:
 
 ### Sensors
 
-| Entity | Описание |
+| Entity | Description |
 |---|---|
-| `sensor.fan_rpm_1` … `fan_rpm_6` | Обороты вентиляторов в RPM |
-| `sensor.wifi_signal` | Уровень Wi-Fi в **процентах** (после кастомного маппинга `(RSSI + 100) × 2`, обрезано к 0–100) |
+| `sensor.fan_rpm_1` … `fan_rpm_6` | Fan speed in RPM |
+| `sensor.wifi_signal` | Wi-Fi strength as a **percentage** (custom mapping `(RSSI + 100) × 2`, clamped 0 – 100) |
 
 ### Numbers (template, `restore_value: true`)
 
-| Entity | Диапазон | Шаг | По умолчанию | Назначение |
+| Entity | Range | Step | Default | Purpose |
 |---|---|---|---|---|
-| `number.led_brightness` | 0.0–1.0 | 0.01 | 0.2 | Яркость LED-кольца |
-| `number.rpm_update_interval` | 1–60 с | 1 | 30 | Интервал опроса всех тахометров; при изменении триггерит `rpm_update_loop` |
-| `number.fan_speed_1` … `fan_speed_4` | 0–100 % | 1 | 50 | Скважность PWM соответствующего вентилятора |
+| `number.led_brightness` | 0.0 – 1.0 | 0.01 | 0.2 | LED ring brightness |
+| `number.rpm_update_interval` | 1 – 60 s | 1 | 30 | Tach polling interval; restarts `rpm_update_loop` on change |
+| `number.fan_speed_1` … `fan_speed_4` | 0 – 100 % | 1 | 50 | PWM duty cycle of the corresponding fan |
 
 ### Switch
 
-| Entity | Действие |
+| Entity | Action |
 |---|---|
-| `switch.restart_rpm_fun` | Программный ребут устройства |
+| `switch.restart_rpm_fun` | Soft reboot of the device |
 
 ---
 
-## LED-индикация
+## LED indication
 
-WS2812-кольцо из 3 светодиодов помечено `internal: true` — в HA его нет, это **локальный индикатор**. Логика:
+The WS2812 ring of 3 LEDs is declared `internal: true` — Home Assistant does not see it. It is a **local status indicator** only:
 
-| Состояние | Цвет / поведение |
+| State | Colour / behaviour |
 |---|---|
-| Wi-Fi подключён, вентиляторы стоят | **Зелёный**, постоянный |
-| Wi-Fi отвалился | **Пурпурный**, мигает 500 ms on / 500 ms off |
-| Любой вентилятор крутится (RPM > 0) | **Жёлтый**, мигает 200 ms on / 200 ms off — перекрывает индикацию подключения |
-| Только что подключились к Wi-Fi | Кратко зелёный + перерассчёт PWM по сохранённым значениям (`init_pwm`) |
+| Wi-Fi connected, fans idle | **Green**, steady |
+| Wi-Fi disconnected | **Magenta**, blinking 500 ms on / 500 ms off |
+| Any fan spinning (RPM > 0) | **Yellow**, blinking 200 ms on / 200 ms off — **overrides** the connection-state indication |
+| Just (re)connected to Wi-Fi | Brief green + `init_pwm` re-applies saved PWM values |
 
-Яркость регулируется в HA через `number.led_brightness`.
+Brightness is controlled from HA via `number.led_brightness`.
 
 ---
 
-## Установка
+## Installation
 
-### 1. Клонирование
+### 1. Clone
 
 ```bash
 git clone https://github.com/ilia-ae/rpm-fun_esphome.git
 cd rpm-fun_esphome
 ```
 
-### 2. Установка ESPHome
+### 2. Install ESPHome
 
 ```bash
-# через pip
+# pip
 pip install esphome
 
-# или Docker
+# or Docker
 docker pull ghcr.io/esphome/esphome
 ```
 
-### 3. Конфиг `secrets.yaml`
+### 3. Create `secrets.yaml`
 
-В корне репозитория создайте `secrets.yaml` (см. шаблон ниже).
+Place it next to `rpm-fun.yaml` (template below).
 
-### 4. Компиляция и прошивка
+### 4. Compile and flash
 
-Первый раз — по USB:
+First time over USB:
 
 ```bash
 esphome run rpm-fun.yaml
-# или, если Docker:
+# or, with Docker:
 docker run --rm -v "${PWD}":/config --device=/dev/ttyACM0 -it ghcr.io/esphome/esphome run rpm-fun.yaml
 ```
 
-Все последующие — **по воздуху**:
+Subsequent updates **over the air**:
 
 ```bash
 esphome upload rpm-fun.yaml --device rpm-fun.local
 ```
 
-### 5. Добавление в Home Assistant
+### 5. Add to Home Assistant
 
-ESPHome-устройство будет обнаружено автоматически по mDNS (`rpm-fun.local`). Подтвердите интеграцию в **Settings → Devices & Services → ESPHome** и введите `api_ha`-ключ из `secrets.yaml`.
+The device announces itself via mDNS as `rpm-fun.local`. Confirm the integration in **Settings → Devices & Services → ESPHome** and paste the `api_ha` key from `secrets.yaml`.
 
 ---
 
 ## `secrets.yaml`
 
-Шаблон (создайте файл рядом с `rpm-fun.yaml`):
+Template (create this file next to `rpm-fun.yaml`):
 
 ```yaml
 wifi_ssid: "YourWiFiSSID"
 wifi_password: "YourWiFiPassword"
 
-# 32-байтовый base64-ключ для шифрования native API
-# Сгенерировать: `openssl rand -base64 32`
+# 32-byte base64 key for the native API encryption
+# Generate: `openssl rand -base64 32`
 api_ha: "PUT_32BYTE_BASE64_KEY_HERE="
 
-# Пароль для OTA-обновлений
+# Password for OTA updates
 ota_key: "your-strong-ota-password"
 ```
 
-> `secrets.yaml` уже должен быть в `.gitignore` — **никогда не коммитьте секреты**.
+> Add `secrets.yaml` to `.gitignore` — **never commit secrets**.
 
-Fallback-точка доступа поднимается под именем `Rpm-Fun Fallback Hotspot` с паролем `uStrxuFDPIOY` (захардкоден в YAML — поменяйте, если разворачиваете не у себя дома).
+The fallback AP comes up as `Rpm-Fun Fallback Hotspot` with the password `uStrxuFDPIOY` (hard-coded in YAML — change it if you deploy this beyond your home network).
 
 ---
 
-## OTA-обновления
+## OTA updates
 
-Платформа `esphome` OTA. Пароль берётся из `!secret ota_key`. Загрузка:
+ESPHome native OTA platform. Password is taken from `!secret ota_key`. To push an update:
 
 ```bash
 esphome upload rpm-fun.yaml --device rpm-fun.local
 ```
 
-ESPHome сам поднимет TCP-сессию на устройстве на стандартном порту (3232) и зальёт новый бинарь.
+ESPHome will open a TCP session to the device (default port 3232) and stream the new binary.
 
 ---
 
-## Тонкости реализации
+## Implementation notes
 
-### Почему фаны 5–6 не используют PCNT
+### Why fans 5 – 6 are on software counting
 
-ESP32-S3 имеет 4 модуля PCNT × 2 канала = **8 каналов**, теоретически хватило бы на 6 тахо. Однако в этой прошивке фаны 5–6 переведены на программный счёт + `internal_filter: 13µs`:
+See the [Why this layout?](#why-this-layout-hardware-constraints) section above for the full story. Short version: this is **not** a PCNT capacity issue; it is a deliberate move to enable the MCU's internal `INPUT_PULLUP` on those two open-collector tach lines via the expanded pin syntax. If you want to switch them back to PCNT, change `use_pcnt: false` → `true`, drop the `mode: INPUT_PULLUP` from the pin block, add an external 4.7 – 10 kΩ pull-up to 3.3 V on the board, and remove `internal_filter` (it behaves differently under PCNT).
 
-- `use_pcnt: false` снимает требование к специфическим PCNT-пинам;
-- `INPUT_PULLUP` сразу даёт корректный логический уровень с open-collector тахо без внешнего резистора;
-- 13 µs — типичный glitch-filter для дребезга на длинных проводах вентилятора.
+### Why `init_pwm` fires on `on_connect`
 
-Если хотите перевести их на PCNT — поменяйте `use_pcnt: false` → `true`, добавьте внешнюю pullup и удалите `internal_filter` (для PCNT он не работает таким же образом).
+After a reset or brown-out, `restore_value: true` restores the target percentages in `number.fan_speed_*`, but ESPHome **does not** auto-call `set_action` on restore. The `init_pwm` script runs from `wifi.on_connect`, syncing the actual LEDC outputs back to the saved values. Without it, the fans would sit at LEDC's default duty until the user nudges the slider in HA.
 
-### Зачем `init_pwm` после реконнекта Wi-Fi
+### The RPM polling loop
 
-После reset/брауна `restore_value: true` восстанавливает целевые проценты в `number.fan_speed_*`, но ESPHome **не вызывает `set_action`** автоматически при подъёме. Скрипт `init_pwm` дёргается в `on_connect` и приводит реальные LEDC-выходы в соответствие сохранённым значениям, иначе после перезагрузки фаны останутся на дефолтных 50 % LEDC, пока пользователь не сдвинет ползунок в HA.
+`pulse_counter` with `update_interval: never` means **"never auto-publish"**. Polling is driven explicitly by the `rpm_update_loop` script (`mode: restart`), which runs `component.update` on all six sensors in sequence with a delay of `rpm_update_interval × 1000 ms`. Changing the interval in HA restarts the loop via `on_value: script.execute rpm_update_loop`.
 
-### Цикл опроса RPM
+`mode: restart` matters: when the interval changes, the old loop is aborted and a new one starts with the new delay — no overlapping concurrent loops.
 
-`pulse_counter` со значением `update_interval: never` означает **«не опрашивать по таймеру»**. Опросом занимается явный скрипт `rpm_update_loop` (`mode: restart`) — он бесконечно дёргает `component.update` по очереди для всех 6 сенсоров с задержкой `rpm_update_interval × 1000 ms`. Изменение интервала через HA рестартует цикл (за счёт `on_value: script.execute rpm_update_loop`).
+### Wi-Fi → percent
 
-`mode: restart` важен: при изменении интервала старый цикл просто прерывается, новый запускается с новой задержкой — без накопления параллельных циклов.
-
-### WiFi → проценты
-
-ESPHome по умолчанию отдаёт WiFi-сигнал в dBm. Формула `quality = (RSSI + 100) × 2`, обрезанная к 0–100, даёт визуально удобные проценты для дашборда (−50 dBm → 100 %, −100 dBm → 0 %).
+ESPHome reports Wi-Fi signal in dBm by default. The lambda `quality = (RSSI + 100) × 2`, clamped to 0 – 100, gives a dashboard-friendly percentage (−50 dBm → 100 %, −100 dBm → 0 %).
 
 ---
 
-## Траблшутинг
+## Troubleshooting
 
-| Симптом | Причина / решение |
+| Symptom | Likely cause / fix |
 |---|---|
-| Тахо показывает 0 на фанах 1–4 | Нет внешней подтяжки 4.7–10 kΩ от Tach к 3.3 V. Добавьте резистор. |
-| RPM колеблется ±50 при стабильной скорости | Слишком короткий `internal_filter` или плохое заземление БП ↔ ESP. Соедините GND. |
-| Фан не стартует, пищит | `min_power` слишком низкий, или PWM-вход фана не принимает 3.3 V. Поднимите `min_power` до `0.2`. |
-| Прошивка не загружается / зависает на boot | Используется модуль с octal-PSRAM (`R8`), GPIO35/37 заняты PSRAM. Возьмите вариант без R8 или замените эти пины. |
-| LED-кольцо горит белым / не тем цветом | Неправильный `rgb_order`. Поменяйте `RBG` ↔ `GRB` ↔ `RGB` в блоке `light`. |
-| Устройство не видно в HA | Проверьте, что `api.encryption.key` в `secrets.yaml` валидный base64 длиной 32 байта (`openssl rand -base64 32`). |
-| Падает на OTA | Проверьте свободное место (≥ 1 MB на ESP32-S3 партиции `ota`). |
+| Tach reads 0 on fans 1 – 4 | Missing external 4.7 – 10 kΩ pull-up from Tach to 3.3 V. Add the resistor. |
+| RPM jitters ± 50 at a steady speed | Filter too short or no common ground between PSU and ESP. Tie the grounds. |
+| Fan refuses to start, chirps | `min_power` too low, or the fan's PWM input is fussy about 3.3 V. Try raising `min_power` to `0.2`. |
+| Firmware hangs at boot | Module is `R8` (octal PSRAM); GPIO35/37 are reserved for PSRAM. Use a non-R8 variant or remap PWM 3/4 to free pins. |
+| LED ring shows the wrong colour | Incorrect `rgb_order`. Try swapping `RBG` ↔ `GRB` ↔ `RGB` in the `light` block. |
+| Device not visible in HA | The `api.encryption.key` in `secrets.yaml` must be valid base64 of 32 bytes (`openssl rand -base64 32`). |
+| OTA fails | Check free space (≥ 1 MB on the ESP32-S3 `ota` partition). |
 
 ---
 
-## Расширения
+## Extensions
 
-В YAML закомментирован блок SSD1306 72×40 OLED (I²C, адрес `0x3C`, на SDA=41 / SCL=40). Раскомментируйте `display:` и блок `font:` уже подключён — будет показывать RPM шести фанов, время по SNTP и качество Wi-Fi.
+The YAML contains a commented SSD1306 72×40 OLED block (I²C, address `0x3C`, on SDA = 41 / SCL = 40). Uncomment the `display:` block (the matching `font:` block is already present) to show six fan RPMs, SNTP time, and Wi-Fi quality on the screen.
 
 ---
 
-## Лицензия
+## License
 
-MIT. См. файл лицензии в корне или ссылку в шапке.
+MIT.
+
+---
+
+## References
+
+- [ESP-IDF — LED Control (LEDC) on ESP32-S3](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/ledc.html)
+- [ESP-IDF — Pulse Counter (PCNT) on ESP32-S3](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/pcnt.html)
+- [ESPHome — `pulse_counter` sensor](https://esphome.io/components/sensor/pulse_counter.html)
+- [ESPHome — `ledc` output](https://esphome.io/components/output/ledc/)
+- [Intel 4-Wire PWM Fan Specification](https://www.formfactors.org/) (background on the 25 kHz target and the open-collector tach signal)
