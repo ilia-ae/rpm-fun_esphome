@@ -328,6 +328,10 @@ api_ha: "PUT_32BYTE_BASE64_KEY_HERE="
 
 # Password for OTA updates
 ota_key: "your-strong-ota-password"
+
+# Password for the recovery Wi-Fi access point (fallback hotspot).
+# Minimum 8 characters.
+ap_password: "your-fallback-ap-password"
 ```
 
 > A template lives at [`secrets.yaml.example`](secrets.yaml.example) — `cp secrets.yaml.example secrets.yaml` and fill it in. `secrets.yaml` is already in [`.gitignore`](.gitignore); **never commit it**.
@@ -339,7 +343,7 @@ If the main Wi-Fi is unreachable at boot or drops out, the device exposes an ope
 | Field | Value |
 |---|---|
 | SSID | `Rpm-Fun Fallback Hotspot` |
-| Password | `uStrxuFDPIOY` (hard-coded in YAML — **change it** if you deploy beyond a trusted network) |
+| Password | from `!secret ap_password` in your local `secrets.yaml` — **set your own**, do not leave the example value |
 | Captive-portal URL | opens automatically; manual fallback: <http://192.168.4.1> |
 
 Connect any phone/laptop to the SSID, accept the captive-portal prompt (or open <http://192.168.4.1> directly), and you get a web form to set new Wi-Fi credentials without re-flashing.

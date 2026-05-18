@@ -49,14 +49,16 @@ wifi:
       - delay: 500ms
   ap:
     ssid: "Rpm-Fun Fallback Hotspot"
-    password: "uStrxuFDPIOY"
+    password: !secret ap_password
 
 captive_portal:
 
-font:
-  - file: 'gfonts://Roboto@300'  # Light
-    id: roboto_light_font
-    size: 12
+# Font block — only needed by the OLED display block below, which is
+# commented out. Uncomment together with the `display:` block.
+#font:
+#  - file: 'gfonts://Roboto@300'  # Light
+#    id: roboto_light_font
+#    size: 12
 
 i2c:
   sda: 41
